@@ -1,11 +1,11 @@
 let zipFiles = {};
 let currentClassPath = null;
-let editedSources = {}; // Para ediciones
+let editedSources = {};
 
 require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
   const editor = monaco.editor.create(document.getElementById('editor'), {
-    value: '// Sube un .jar, expande las carpetas y selecciona una .class para descompilarla',
+    value: '// Sube un .jar → expande carpetas → selecciona una clase para descompilar online',
     language: 'java',
     theme: 'vs-dark',
     automaticLayout: true
@@ -21,7 +21,6 @@ require(['vs/editor/editor.main'], function() {
     editedSources = {};
 
     const treeData = [];
-
     const packages = {};
 
     for (const path in zipFiles) {
@@ -67,36 +66,39 @@ require(['vs/editor/editor.main'], function() {
       if (data.node.type === 'package') $('#tree').jstree('toggle_node', data.node);
     });
 
-    // Click en clase → descompilar con Vineflower API
+    // Click en clase → descompilar con javadecompilers.com
     $('#tree').on('activate_node.jstree', async (e, data) => {
       if (data.node.type !== 'class') return;
       currentClassPath = data.node.original.path;
-      setStatus('Descompilando con Vineflower... (puede tardar unos segundos)');
+      setStatus('Subiendo clase a decompiler online y obteniendo código... (unos segundos)');
 
       try {
         const classFile = zipFiles[currentClassPath];
-        const bytes = await classFile.async('uint8array');
+        const blob = await classFile.async('blob');
 
-        const response = await fetch('https://api.decompiler.dev/decompile/vineflower', {
+        const formData = new FormData();
+        formData.append('file', blob, data.node.text); // Nombre del .class
+
+        const response = await fetch('http://www.javadecompilers.com/apiv2/decompile', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes
+          body: formData
         });
 
-        if (!response.ok) throw new Error('API error: ' + response.status);
+        if (!response.ok) throw new Error('Error del servidor: ' + response.status);
 
-        const code = await response.text();
-        editor.setValue(code || '// No se pudo obtener código legible');
+        const result = await response.json();
+        const code = result.decompiled || '// No se pudo descompilar (quizás ofuscado)';
+        editor.setValue(code);
         editedSources[currentClassPath] = code;
-        setStatus('¡Descompilado con éxito! Puedes editar el código.');
+        setStatus('¡Descompilado con éxito! Puedes editar el código aquí.');
       } catch (err) {
-        editor.setValue('// Error al descompilar: ' + err.message);
-        setStatus('Falló la descompilación. Puede ser por ofuscación fuerte o límite de la API.');
+        editor.setValue('// Error: ' + err.message + '\n// Prueba con otro plugin o clase no ofuscada');
+        setStatus('Falló la descompilación online. Puede ser temporal o por ofuscación.');
         console.error(err);
       }
     });
 
-    setStatus('¡JAR cargado! Haz click en carpetas para expandir (como "com") y selecciona una clase.');
+    setStatus('¡JAR cargado! Haz click en carpetas para expandir y selecciona una clase.');
   });
 });
 
