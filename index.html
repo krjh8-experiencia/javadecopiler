@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JAR Editor Online</title>
+  <link rel="stylesheet" href="style.css"/>
+  <!-- jQuery y jsTree -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
+  <!-- JSZip -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- Monaco Editor -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.min.js"></script>
+  <!-- Slicer (descompilador CFR en navegador via TeaVM) -->
+  <script src="https://slicer.run/teavm/classes.js"></script>
+  <script src="https://slicer.run/teavm/lib.js"></script>
+</head>
+<body>
+  <h1>JAR Editor Online</h1>
+  <p>Sube un .jar para ver y editar sus clases (todo en tu navegador, sin subir nada)</p>
+
+  <input type="file" id="jarInput" accept=".jar" />
+  <div id="status"></div>
+
+  <div id="layout">
+    <div id="tree"></div>
+    <div id="editor"></div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
