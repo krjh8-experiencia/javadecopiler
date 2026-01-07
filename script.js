@@ -1,11 +1,11 @@
 let zipFiles = {};
 let currentClassPath = null;
-let editedSources = {}; // Para guardar ediciones futuras
+let editedSources = {};
 
 require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
   const editor = monaco.editor.create(document.getElementById('editor'), {
-    value: '// Selecciona una clase del árbol para descompilarla y editarla',
+    value: '// Expande las carpetas (como com) con un click y selecciona una clase para descompilarla',
     language: 'java',
     theme: 'vs-dark',
     automaticLayout: true
@@ -14,47 +14,55 @@ require(['vs/editor/editor.main'], function() {
   // Selector de descompilador
   const decompilerSelect = document.createElement('select');
   decompilerSelect.innerHTML = `
-    <option value="CFR">CFR (rápido)</option>
-    <option value="Vineflower" selected>Vineflower (mejor para plugins MC)</option>
+    <option value="CFR">CFR</option>
+    <option value="Vineflower" selected>Vineflower (recomendado para plugins)</option>
     <option value="Procyon">Procyon</option>
   `;
-  decompilerSelect.style.margin = '10px auto';
+  decompilerSelect.style.margin = '15px auto';
   decompilerSelect.style.display = 'block';
+  decompilerSelect.style.padding = '8px';
+  decompilerSelect.style.fontSize = '16px';
   document.querySelector('h1').after(decompilerSelect);
 
   document.getElementById('jarInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    setStatus('Cargando y descomprimiendo JAR...');
+    setStatus('Descomprimiendo JAR...');
     const zip = await JSZip.loadAsync(file);
     zipFiles = zip.files;
     editedSources = {};
 
-    // Construir árbol correctamente (soporta paquetes anidados profundos)
-    const treeData = [{ text: 'Raíz', children: [], state: { opened: true } }];
+    const rootNode = { text: 'JAR contenido', children: [], state: { opened: true } };
+    const rootChildren = rootNode.children;
 
-    const root = treeData[0].children;
-
+    // Recorrer todos los .class
     for (const path in zip.files) {
       if (path.endsWith('.class') && !path.includes('META-INF/') && !path.startsWith('.')) {
         const parts = path.split('/');
-        let current = root;
+        let currentLevel = rootChildren;
 
-        // Crear paquetes anidados
+        // Crear estructura de paquetes
         for (let i = 0; i < parts.length - 1; i++) {
-          const part = parts[i];
-          let node = current.find(n => n.text === part && n.type === 'package');
-          if (!node) {
-            node = { text: part, children: [], type: 'package', icon: 'jstree-folder' };
-            current.push(node);
+          const folderName = parts[i];
+          let folderNode = currentLevel.find(n => n.text === folderName && n.type === 'package');
+
+          if (!folderNode) {
+            folderNode = {
+              text: folderName,
+              children: [],
+              type: 'package',
+              icon: 'jstree-folder',
+              state: { opened: false }
+            };
+            currentLevel.push(folderNode);
           }
-          current = node.children;
+          currentLevel = folderNode.children;
         }
 
         // Añadir la clase
         const className = parts[parts.length - 1];
-        current.push({
+        currentLevel.push({
           text: className,
           type: 'class',
           icon: 'jstree-file',
@@ -63,20 +71,27 @@ require(['vs/editor/editor.main'], function() {
       }
     }
 
+    // Destruir y recrear el árbol
     $('#tree').jstree('destroy').empty();
     $('#tree').jstree({
-      core: { data: treeData },
-      plugins: ['types'],
+      core: {
+        data: [rootNode],
+        check_callback: true
+      },
+      plugins: ['types', 'wholerow'],
       types: {
         'package': { icon: 'jstree-folder' },
         'class': { icon: 'jstree-file' }
       }
     });
 
-    setStatus('¡Listo! Ahora expande las carpetas (como /com) y selecciona una clase.');
+    // ¡Importante! Un solo click expande carpetas
+    $('#tree').on('select_node.jstree', (e, data) => {
+      $('#tree').jstree('toggle_node', data.node);
+    });
 
-    // Al seleccionar una clase
-    $('#tree').on('select_node.jstree', async (e, data) => {
+    // Doble funcionalidad: si es clase → descompila
+    $('#tree').on('activate_node.jstree', async (e, data) => {
       if (data.node.type === 'class') {
         currentClassPath = data.node.original.path;
         setStatus('Descompilando ' + data.node.text + '...');
@@ -84,37 +99,36 @@ require(['vs/editor/editor.main'], function() {
         try {
           const classFile = zipFiles[currentClassPath];
           const arrayBuffer = await classFile.async('arraybuffer');
+          const className = currentClassPath.replace('.class', '').replace(/\//g, '.');
 
-          const decompiler = decompilerSelect.value;
           let result;
+          const decompiler = decompilerSelect.value;
 
           if (decompiler === 'CFR') {
-            result = await org.katana.slicer.decompiler.CFR.decompile(arrayBuffer, currentClassPath.replace('.class', '').replace(/\//g, '.'));
+            result = await org.katana.slicer.decompiler.CFR.decompile(arrayBuffer, className);
           } else if (decompiler === 'Vineflower') {
-            result = await org.katana.slicer.decompiler.Vineflower.decompile(arrayBuffer, currentClassPath.replace('.class', '').replace(/\//g, '.'));
+            result = await org.katana.slicer.decompiler.Vineflower.decompile(arrayBuffer, className);
           } else if (decompiler === 'Procyon') {
-            result = await org.katana.slicer.decompiler.Procyon.decompile(arrayBuffer, currentClassPath.replace('.class', '').replace(/\//g, '.'));
+            result = await org.katana.slicer.decompiler.Procyon.decompile(arrayBuffer, className);
           }
 
-          const code = result || '// Error: No se pudo descompilar (posiblemente muy ofuscado)';
+          const code = result || '// No se pudo descompilar correctamente (quizás muy ofuscado)';
           editor.setValue(code);
+          editedSources[currentClassPath] = code;
 
-          // Guardar fuente original para futuras ediciones
-          if (!editedSources[currentClassPath]) {
-            editedSources[currentClassPath] = code;
-          }
-
-          setStatus('Descompilado con ' + decompiler + '. ¡Puedes editar!');
+          setStatus('Descompilado con ' + decompiler + '. ¡Edita lo que quieras!');
         } catch (err) {
-          editor.setValue('// Error grave: ' + (err.message || err));
-          setStatus('Falló la descompilación. Prueba otro descompilador.');
+          editor.setValue('// Error: ' + (err.message || err));
+          setStatus('Error al descompilar. Prueba otro descompilador.');
           console.error(err);
         }
       }
     });
+
+    setStatus('¡Listo! Haz click en las carpetas para expandirlas (com → tu → plugin → clases)');
   });
 });
 
 function setStatus(msg) {
-  document.getElementById('status').textContent = msg;
-    }        
+  document.getElementById('status').innerHTML = '<strong>' + msg + '</strong>';
+}
