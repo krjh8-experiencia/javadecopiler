@@ -2,10 +2,13 @@ let zipFiles = {};
 let currentClassPath = null;
 let editedSources = {};
 
+// Variable para saber si Slicer ya está listo
+let slicerReady = false;
+
 require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
   const editor = monaco.editor.create(document.getElementById('editor'), {
-    value: '// Haz click en cualquier carpeta (como "com") para expandirla → luego selecciona una clase',
+    value: '// Sube un .jar → haz click en las carpetas para expandirlas → selecciona una clase',
     language: 'java',
     theme: 'vs-dark',
     automaticLayout: true
@@ -15,27 +18,50 @@ require(['vs/editor/editor.main'], function() {
   const decompilerSelect = document.createElement('select');
   decompilerSelect.innerHTML = `
     <option value="CFR">CFR</option>
-    <option value="Vineflower" selected>Vineflower (mejor para plugins Minecraft)</option>
+    <option value="Vineflower" selected>Vineflower (recomendado)</option>
     <option value="Procyon">Procyon</option>
   `;
-  decompilerSelect.style.cssText = 'margin: 15px auto; display: block; padding: 10px; font-size: 16px; border-radius: 8px;';
+  decompilerSelect.style.cssText = 'margin: 20px auto; display: block; padding: 10px; font-size: 16px; border-radius: 8px; width: 300px;';
   document.querySelector('h1').after(decompilerSelect);
+
+  // Esperar a que Slicer cargue completamente
+  setStatus('Cargando descompiladores (Slicer)... Esto puede tardar 10-20 segundos la primera vez.');
+
+  // Slicer expone una promesa global cuando está listo
+  window.addEventListener('load', () => {
+    if (window.Java && window.Java.isReady) {
+      window.Java.isReady().then(() => {
+        slicerReady = true;
+        setStatus('Descompiladores cargados. ¡Sube un .jar para empezar!');
+      });
+    }
+  });
+
+  // Si por alguna razón no carga en 60 segundos
+  setTimeout(() => {
+    if (!slicerReady) {
+      setStatus('Error: Slicer tardó demasiado en cargar. Recarga la página.');
+    }
+  }, 60000);
 
   document.getElementById('jarInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    if (!slicerReady) {
+      setStatus('Espera a que los descompiladores terminen de cargar...');
+      return;
+    }
 
     setStatus('Descomprimiendo el JAR...');
     const zip = await JSZip.loadAsync(file);
     zipFiles = zip.files;
     editedSources = {};
 
-    // Estructura del árbol
     const treeData = [];
 
-    const packages = {}; // Para construir jerarquía
+    const packages = {};
 
-    // Recopilar todos los paths de .class
     for (const path in zipFiles) {
       if (path.endsWith('.class') && !path.includes('META-INF/') && !path.startsWith('.')) {
         const parts = path.split('/');
@@ -43,21 +69,18 @@ require(['vs/editor/editor.main'], function() {
 
         for (let i = 0; i < parts.length - 1; i++) {
           const part = parts[i];
-          if (!current[part]) current[part] = { '__isPackage': true, '__children': {} };
-          current = current[part].__children;
+          if (!current[part]) current[part] = {};
+          current = current[part];
         }
         const className = parts[parts.length - 1];
         current[className] = path;
       }
     }
 
-    // Función recursiva para convertir a formato jsTree
     function buildTree(obj, name) {
       const children = [];
       for (const key in obj) {
-        if (key === '__isPackage') continue;
         if (typeof obj[key] === 'string') {
-          // Es una clase
           children.push({
             text: key,
             type: 'class',
@@ -65,35 +88,29 @@ require(['vs/editor/editor.main'], function() {
             icon: 'jstree-file'
           });
         } else {
-          // Es un paquete
           children.push(buildTree(obj[key], key));
         }
       }
-
       return {
-        text: name || 'Raíz',
-        children: children,
+        text: name,
+        children: children.length > 0 ? children : false,
         type: 'package',
         icon: 'jstree-folder',
-        state: { opened: name === 'Raíz' } // Abrir solo la raíz
+        state: { opened: name === 'com' } // Opcional: abrir "com" automáticamente
       };
     }
 
-    // Construir árbol completo
-    const rootChildren = buildTree(packages, 'Raíz').children;
-    treeData.push(...rootChildren);
+    for (const pkg in packages) {
+      treeData.push(buildTree(packages[pkg], pkg));
+    }
 
     if (treeData.length === 0) {
       treeData.push({ text: 'No se encontraron clases .class', state: { disabled: true } });
     }
 
-    // Destruir y recrear jsTree
     $('#tree').jstree('destroy');
     $('#tree').jstree({
-      core: {
-        data: treeData,
-        themes: { stripes: true }
-      },
+      core: { data: treeData },
       plugins: ['wholerow', 'types'],
       types: {
         package: { icon: 'jstree-folder' },
@@ -101,15 +118,15 @@ require(['vs/editor/editor.main'], function() {
       }
     });
 
-    // Click en cualquier nodo → si es carpeta, expandir/colapsar
-    $('#tree').on('select_node.jstree', function (e, data) {
+    // Click en carpeta → expandir
+    $('#tree').on('select_node.jstree', (e, data) => {
       if (data.node.type === 'package') {
         $('#tree').jstree('toggle_node', data.node);
       }
     });
 
-    // Al activar una clase (doble click o enter, pero también permitimos click)
-    $('#tree').on('activate_node.jstree', async function (e, data) {
+    // Click en clase → descompilar
+    $('#tree').on('activate_node.jstree', async (e, data) => {
       if (data.node.type === 'class') {
         currentClassPath = data.node.original.path;
         setStatus('Descompilando ' + data.node.text + '...');
@@ -122,22 +139,18 @@ require(['vs/editor/editor.main'], function() {
           let result;
           const decompiler = decompilerSelect.value;
 
-          switch (decompiler) {
-            case 'CFR':
-              result = await org.katana.slicer.decompiler.CFR.decompile(arrayBuffer, className);
-              break;
-            case 'Vineflower':
-              result = await org.katana.slicer.decompiler.Vineflower.decompile(arrayBuffer, className);
-              break;
-            case 'Procyon':
-              result = await org.katana.slicer.decompiler.Procyon.decompile(arrayBuffer, className);
-              break;
+          if (decompiler === 'CFR') {
+            result = await org.katana.slicer.decompiler.CFR.decompile(arrayBuffer, className);
+          } else if (decompiler === 'Vineflower') {
+            result = await org.katana.slicer.decompiler.Vineflower.decompile(arrayBuffer, className);
+          } else if (decompiler === 'Procyon') {
+            result = await org.katana.slicer.decompiler.Procyon.decompile(arrayBuffer, className);
           }
 
-          const code = result || '// No se pudo descompilar (muy ofuscado o error)';
+          const code = result || '// No se pudo descompilar correctamente';
           editor.setValue(code);
           editedSources[currentClassPath] = code;
-          setStatus('¡Descompilado con ' + decompiler + '! Edita lo que quieras.');
+          setStatus('¡Descompilado! Edita el código y después podremos recompilar.');
         } catch (err) {
           editor.setValue('// ERROR: ' + (err.message || err));
           setStatus('Error al descompilar. Prueba otro descompilador.');
@@ -146,10 +159,10 @@ require(['vs/editor/editor.main'], function() {
       }
     });
 
-    setStatus('¡Listo! Haz click en "com" o cualquier carpeta para expandirla.');
+    setStatus('¡JAR cargado! Haz click en las carpetas (como "com") para expandirlas.');
   });
 });
 
 function setStatus(msg) {
   document.getElementById('status').innerHTML = '<strong>' + msg + '</strong>';
-                                                                           }    
+            }
