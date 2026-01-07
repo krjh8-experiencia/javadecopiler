@@ -1,11 +1,10 @@
 let zipFiles = {};
-let currentClassPath = null;
-let editedSources = {};
+let jarBlob = null;
 
 require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
   const editor = monaco.editor.create(document.getElementById('editor'), {
-    value: '// Sube un .jar → expande carpetas → selecciona una clase para descompilar online',
+    value: '// Sube un .jar → verás el árbol de clases → usa el botón para decompilar online en decompiler.com (el mejor sitio actual)',
     language: 'java',
     theme: 'vs-dark',
     automaticLayout: true
@@ -15,10 +14,11 @@ require(['vs/editor/editor.main'], function() {
     const file = e.target.files[0];
     if (!file) return;
 
-    setStatus('Descomprimiendo JAR...');
+    jarBlob = file;
+    setStatus('Descomprimiendo JAR para mostrar árbol...');
+
     const zip = await JSZip.loadAsync(file);
     zipFiles = zip.files;
-    editedSources = {};
 
     const treeData = [];
     const packages = {};
@@ -40,7 +40,7 @@ require(['vs/editor/editor.main'], function() {
       const children = [];
       for (const key in obj) {
         if (typeof obj[key] === 'string') {
-          children.push({ text: key, type: 'class', path: obj[key], icon: 'jstree-file' });
+          children.push({ text: key, type: 'class', icon: 'jstree-file' });
         } else {
           children.push(buildTree(obj[key], key));
         }
@@ -61,47 +61,37 @@ require(['vs/editor/editor.main'], function() {
       types: { package: { icon: 'jstree-folder' }, class: { icon: 'jstree-file' } }
     });
 
-    // Click en carpeta → expandir
+    // Expandir carpetas con click
     $('#tree').on('select_node.jstree', (e, data) => {
       if (data.node.type === 'package') $('#tree').jstree('toggle_node', data.node);
     });
 
-    // Click en clase → descompilar con javadecompilers.com
-    $('#tree').on('activate_node.jstree', async (e, data) => {
-      if (data.node.type !== 'class') return;
-      currentClassPath = data.node.original.path;
-      setStatus('Subiendo clase a decompiler online y obteniendo código... (unos segundos)');
+    // Mostrar mensaje con botón
+    editor.setValue('// Árbol cargado. Usa el botón abajo para decompilar todo el JAR online.');
 
-      try {
-        const classFile = zipFiles[currentClassPath];
-        const blob = await classFile.async('blob');
+    // Crear botón para abrir en decompiler.com
+    const button = document.createElement('button');
+    button.textContent = 'Decompilar JAR completo en decompiler.com (recomendado)';
+    button.style.cssText = 'margin: 20px auto; display: block; padding: 15px; font-size: 18px; background: #4CAF50; color: white; border: none; border-radius: 8px; cursor: pointer;';
+    button.onclick = () => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target.result;
+        window.open('https://www.decompiler.com/#data:' + encodeURIComponent(dataUrl), '_blank');
+      };
+      reader.readAsDataURL(jarBlob);
+    };
 
-        const formData = new FormData();
-        formData.append('file', blob, data.node.text); // Nombre del .class
+    document.getElementById('status').innerHTML = '';
+    document.getElementById('status').appendChild(button);
 
-        const response = await fetch('http://www.javadecompilers.com/apiv2/decompile', {
-          method: 'POST',
-          body: formData
-        });
-
-        if (!response.ok) throw new Error('Error del servidor: ' + response.status);
-
-        const result = await response.json();
-        const code = result.decompiled || '// No se pudo descompilar (quizás ofuscado)';
-        editor.setValue(code);
-        editedSources[currentClassPath] = code;
-        setStatus('¡Descompilado con éxito! Puedes editar el código aquí.');
-      } catch (err) {
-        editor.setValue('// Error: ' + err.message + '\n// Prueba con otro plugin o clase no ofuscada');
-        setStatus('Falló la descompilación online. Puede ser temporal o por ofuscación.');
-        console.error(err);
-      }
-    });
-
-    setStatus('¡JAR cargado! Haz click en carpetas para expandir y selecciona una clase.');
+    setStatus('¡Árbol listo! Haz click en carpetas para expandir (como "com"). Luego usa el botón verde para decompilar todo.');
   });
 });
 
 function setStatus(msg) {
-  document.getElementById('status').innerHTML = '<strong>' + msg + '</strong>';
+  // El botón reemplaza esto, pero por si acaso
+  if (!document.querySelector('button')) {
+    document.getElementById('status').innerHTML = '<strong>' + msg + '</strong>';
+  }
 }
